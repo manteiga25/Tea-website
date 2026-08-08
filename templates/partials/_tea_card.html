@@ -1,0 +1,28 @@
+{# Expects: tea, and optionally tags (list[str]) #}
+<article class="tea-card">
+  <a class="tea-card-link" href="{{ url_for('get_product_page', id=tea.id) }}">
+    <div class="tea-card-media">
+      <img src="{{ tea.img_url }}" alt="{{ tea.name }}" loading="lazy" decoding="async">
+      <div class="tea-card-badges">
+        {% if tea.is_tea %}<span class="badge badge-leaf">True tea</span>{% endif %}
+        {% if not tea.has_caffeine %}<span class="badge badge-calm">Caffeine free</span>{% endif %}
+      </div>
+    </div>
+    <div class="tea-card-body">
+      <h3 class="tea-card-name">{{ tea.name }}</h3>
+      {% if tea.benefit_headline %}
+        <p class="tea-card-headline">{{ tea.benefit_headline }}</p>
+      {% endif %}
+      {% if tags %}
+        <ul class="tag-row">
+          {% for tag in tags[:3] %}<li class="tag">{{ tag }}</li>{% endfor %}
+          {% if tags|length > 3 %}<li class="tag tag-more">+{{ tags|length - 3 }}</li>{% endif %}
+        </ul>
+      {% endif %}
+      <div class="tea-card-foot">
+        <span class="price">${{ '%.2f'|format(tea.price) }}</span>
+        <span class="tea-card-cta">View blend<span aria-hidden="true">→</span></span>
+      </div>
+    </div>
+  </a>
+</article>

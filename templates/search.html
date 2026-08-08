@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+
+{% block title %}
+  {% if query %}“{{ query }}” — Tea Smart search{% else %}All teas — Tea Smart{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="shell search-layout">
+
+  <header class="search-head">
+    <p class="eyebrow">Catalogue</p>
+    <h1>
+      {% if query %}Results for “{{ query }}”
+      {% elif selected_benefits %}{{ selected_benefits|join(' · ') }}
+      {% else %}Every blend we make{% endif %}
+    </h1>
+    <p class="search-count">
+      <strong>{{ results|length }}</strong> blend{{ '' if results|length == 1 else 's' }}
+      {% if query and semantic_hits %}<span class="smart-note">· ranked by meaning, not just keywords</span>{% endif %}
+    </p>
+  </header>
+
+  <button class="filter-toggle" type="button" data-filter-toggle aria-expanded="false" aria-controls="filters">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+      <path d="M3 6h14M6 10h8M8 14h4"/>
+    </svg>
+    Filters
+    {% set active_count = selected_benefits|length + selected_herbs|length + (1 if kind else 0) + (1 if caffeine else 0) %}
+    {% if active_count %}<span class="filter-badge">{{ active_count }}</span>{% endif %}
+  </button>
+
+  <form class="filters" id="filters" method="get" action="{{ url_for('search_page') }}" data-filter-form>
+    <div class="filters-head">
+      <h2>Refine</h2>
+      <a class="filters-clear" href="{{ url_for('search_page') }}">Clear all</a>
+    </div>
+
+    <fieldset class="filter-group">
+      <legend>Keyword</legend>
+      <input class="filter-input" type="search" name="name" value="{{ query }}"
+             placeholder="e.g. calming, ginger, sleep" autocomplete="off">
+    </fieldset>
+
+    <fieldset class="filter-group">
+      <legend>Type</legend>
+      <div class="pill-row">
+        {% for value, label in [('', 'All'), ('herbal', 'Herbal infusion'), ('tea', 'True tea')] %}
+          <label class="pill">
+            <input type="radio" name="kind" value="{{ value }}" {% if kind == value %}checked{% endif %}>
+            <span>{{ label }}</span>
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <fieldset class="filter-group">
+      <legend>Caffeine</legend>
+      <div class="pill-row">
+        {% for value, label in [('', 'Either'), ('no', 'Caffeine free'), ('yes', 'Contains caffeine')] %}
+          <label class="pill">
+            <input type="radio" name="caffeine" value="{{ value }}" {% if caffeine == value %}checked{% endif %}>
+            <span>{{ label }}</span>
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <fieldset class="filter-group">
+      <legend>Benefit</legend>
+      <div class="check-list">
+        {% for name, count in all_benefits %}
+          <label class="check">
+            <input type="checkbox" name="benefit" value="{{ name }}"
+                   {% if name in selected_benefits %}checked{% endif %}>
+            <span class="check-box" aria-hidden="true"></span>
+            <span class="check-label">{{ name }}</span>
+            <span class="check-count">{{ count }}</span>
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <fieldset class="filter-group">
+      <legend>Ingredient</legend>
+      <input class="filter-input filter-input-sm" type="search" placeholder="Filter herbs…"
+             data-list-filter="herb-list" aria-label="Filter the ingredient list">
+      <div class="check-list check-list-tall" id="herb-list">
+        {% for herb in all_herbs %}
+          <label class="check" data-list-item="{{ herb|lower }}">
+            <input type="checkbox" name="herb" value="{{ herb }}"
+                   {% if herb in selected_herbs %}checked{% endif %}>
+            <span class="check-box" aria-hidden="true"></span>
+            <span class="check-label">{{ herb }}</span>
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <fieldset class="filter-group">
+      <legend>Sort by</legend>
+      <select class="filter-input" name="sort">
+        <option value="relevance" {% if sort == 'relevance' %}selected{% endif %}>Relevance</option>
+        <option value="name" {% if sort == 'name' %}selected{% endif %}>Name A–Z</option>
+        <option value="name_desc" {% if sort == 'name_desc' %}selected{% endif %}>Name Z–A</option>
+      </select>
+    </fieldset>
+
+    <button class="btn btn-primary btn-block" type="submit">Apply filters</button>
+  </form>
+
+  <section class="search-results" aria-live="polite">
+    {% if selected_benefits or selected_herbs or kind or caffeine or query %}
+      <div class="chip-row">
+        {% if query %}
+          <a class="chip" href="{{ url_for('search_page', benefit=selected_benefits, herb=selected_herbs, kind=kind, caffeine=caffeine, sort=sort) }}">
+            “{{ query }}” <span aria-hidden="true">×</span></a>
+        {% endif %}
+        {% if kind %}
+          <a class="chip" href="{{ url_for('search_page', name=query, benefit=selected_benefits, herb=selected_herbs, caffeine=caffeine, sort=sort) }}">
+            {{ 'True tea' if kind == 'tea' else 'Herbal infusion' }} <span aria-hidden="true">×</span></a>
+        {% endif %}
+        {% if caffeine %}
+          <a class="chip" href="{{ url_for('search_page', name=query, benefit=selected_benefits, herb=selected_herbs, kind=kind, sort=sort) }}">
+            {{ 'Caffeine free' if caffeine == 'no' else 'Contains caffeine' }} <span aria-hidden="true">×</span></a>
+        {% endif %}
+        {% for benefit in selected_benefits %}
+          <a class="chip" href="{{ url_for('search_page', name=query, benefit=selected_benefits|reject('eq', benefit)|list, herb=selected_herbs, kind=kind, caffeine=caffeine, sort=sort) }}">
+            {{ benefit }} <span aria-hidden="true">×</span></a>
+        {% endfor %}
+        {% for herb in selected_herbs %}
+          <a class="chip" href="{{ url_for('search_page', name=query, benefit=selected_benefits, herb=selected_herbs|reject('eq', herb)|list, kind=kind, caffeine=caffeine, sort=sort) }}">
+            {{ herb }} <span aria-hidden="true">×</span></a>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if results %}
+      <div class="tea-grid tea-grid-results">
+        {% for tea in results %}
+          {% with tags = benefits_by_tea.get(tea.id, []) %}
+            {% include "partials/_tea_card.html" %}
+          {% endwith %}
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <span class="empty-mark" aria-hidden="true">🍃</span>
+        <h2>Nothing matched that combination</h2>
+        <p>Try removing an ingredient or widening the benefit filter — some blends are quite specific.</p>
+        <a class="btn btn-primary" href="{{ url_for('search_page') }}">Reset the search</a>
+      </div>
+    {% endif %}
+  </section>
+
+</div>
+{% endblock %}

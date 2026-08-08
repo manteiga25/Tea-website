@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+
+{% block title %}Tea Smart — organic herbal blends, matched to how you feel{% endblock %}
+
+{% block content %}
+
+<section class="hero">
+  <div class="shell hero-inner">
+    <div class="hero-copy">
+      <p class="eyebrow">Organic · Ethically sourced · {{ herb_count }} single herbs</p>
+      <h1>Find the tea<br>that fits the <em>moment</em>.</h1>
+      <p class="lede">
+        {{ tea_count }} herbal blends, indexed by ingredient, benefit and meaning.
+        Search the way you actually think — “something calming”, “settle my stomach” —
+        and Tea Smart understands.
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="{{ url_for('search_page') }}">Explore the collection</a>
+        <a class="btn btn-ghost" href="#categories">Browse by benefit</a>
+      </div>
+      <dl class="hero-stats">
+        <div><dt>{{ tea_count }}</dt><dd>blends</dd></div>
+        <div><dt>{{ herb_count }}</dt><dd>herbs</dd></div>
+        <div><dt>100%</dt><dd>organic</dd></div>
+      </dl>
+    </div>
+
+    <div class="hero-visual">
+      {# The 3D scene is desktop-only; app.js refuses to boot it on small or
+         touch-first screens, where this static composition stands in. #}
+      <div class="hero-fallback" data-hero-fallback>
+        <div class="hero-glow" aria-hidden="true"></div>
+        <div class="hero-cup" aria-hidden="true">
+          <span class="steam steam-1"></span>
+          <span class="steam steam-2"></span>
+          <span class="steam steam-3"></span>
+          <div class="cup-body"><div class="cup-liquid"></div></div>
+          <div class="cup-handle"></div>
+          <div class="cup-saucer"></div>
+        </div>
+      </div>
+      <canvas id="hero-canvas" data-hero-canvas aria-hidden="true"></canvas>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="categories">
+  <div class="shell">
+    <header class="section-head">
+      <div>
+        <p class="eyebrow">Shop by benefit</p>
+        <h2>What do you need today?</h2>
+      </div>
+      <a class="link-arrow" href="{{ url_for('search_page') }}">See all {{ tea_count }} blends <span aria-hidden="true">→</span></a>
+    </header>
+
+    <div class="category-grid">
+      {# Wide cards span 2 of the 4 desktop columns. These positions make the
+         spans total 12 for the 8 categories main.py asks for, so every row
+         fills exactly — change one and the last row leaves a gap. #}
+      {% set wide_positions = [0, 3, 6, 7] %}
+      {% for category in categories %}
+        <a class="category-card{% if loop.index0 in wide_positions %} category-card-wide{% endif %}"
+           href="{{ url_for('search_page', benefit=category.name) }}">
+          {% if category.image_url %}
+            <img class="category-img" src="{{ category.image_url }}" alt="" loading="lazy" decoding="async">
+          {% endif %}
+          <div class="category-scrim" aria-hidden="true"></div>
+          <div class="category-body">
+            <h3>{{ category.name }}</h3>
+            {% if category.blurb %}<p class="category-blurb">{{ category.blurb }}</p>{% endif %}
+            <span class="category-count">{{ category.tea_count }} blend{{ '' if category.tea_count == 1 else 's' }}</span>
+          </div>
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="section section-tinted">
+  <div class="shell">
+    <header class="section-head">
+      <div>
+        <p class="eyebrow">Everyday favourites</p>
+        <h2>Blends to start with</h2>
+      </div>
+      <a class="link-arrow" href="{{ url_for('search_page') }}">Browse everything <span aria-hidden="true">→</span></a>
+    </header>
+
+    <div class="tea-grid">
+      {% for tea in featured %}
+        {% with tags = benefits_by_tea.get(tea.id, []) %}
+          {% include "partials/_tea_card.html" %}
+        {% endwith %}
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="shell ritual">
+    <div class="ritual-copy">
+      <p class="eyebrow">The ritual</p>
+      <h2>Three minutes, done properly.</h2>
+      <p class="lede">Every blend ships with the steeping notes our herbalists actually use — water, time and how many cups a day makes sense.</p>
+      <a class="btn btn-primary" href="{{ url_for('search_page') }}">Find your blend</a>
+    </div>
+    <ol class="ritual-steps">
+      <li><span class="step-num">01</span><h3>Boil &amp; pour</h3><p>8 oz of freshly boiled water over one tea bag.</p></li>
+      <li><span class="step-num">02</span><h3>Cover &amp; steep</h3><p>Keep the lid on for 10–15 minutes so nothing volatile escapes.</p></li>
+      <li><span class="step-num">03</span><h3>Squeeze &amp; sip</h3><p>Press the bag before removing it — that is where the goodness hides.</p></li>
+    </ol>
+  </div>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+  <script type="module" src="{{ url_for('static', filename='js/hero3d.js') }}"></script>
+{% endblock %}
