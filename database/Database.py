@@ -1,12 +1,20 @@
 import re
-import sqlite3
-from flask import g, current_app
 
-from database import Models
+from flask import g, current_app
+from sqlalchemy import create_engine, func, or_, select
+from sqlalchemy.orm import selectinload, sessionmaker
+
+from database import Models, Tables
+from database.Tables import ingredients, tea_benefit
 
 app = current_app.app_context()
 
 DATABASE = app.app.config['DATABASE_URL']
+
+# One engine for the whole process — it owns the connection pool. Sessions are
+# cheap and created per request below.
+engine = create_engine(f"sqlite:///{DATABASE}")
+SessionFactory = sessionmaker(bind=engine)
 
 # The Benefit table was scraped from several places, so a few concepts arrived
 # under two spellings. Everything the front-end shows goes through this map so
@@ -44,26 +52,22 @@ CATEGORY_BLURBS = {
 }
 
 
-def __get_db():
-    db = getattr(g, '_database', None)
-    if db is None:
-        db = g._database = sqlite3.connect(DATABASE)
-        db.row_factory = sqlite3.Row
-    return db
+def __get_session():
+    """One session per request, closed by the teardown handler below."""
+    session = getattr(g, '_session', None)
+    if session is None:
+        session = g._session = SessionFactory()
+    return session
 
 def getProductByIds(id: list[int]):
-    placeholders = ", ".join("?" for _ in id)
+    rows = __get_session().scalars(
+        select(Tables.Tea).where(Tables.Tea.id.in_(id))
+    ).all()
 
-    data_row = __get_db().execute(
-        f"SELECT * FROM Tea WHERE id IN ({placeholders});", id
-    ).fetchall()
-
-    return [Models.Tea.model_validate(dict(row)) for row in data_row]
+    return [Models.Tea.model_validate(row) for row in rows]
 
 def getProductById(id: int):
-    return Models.Tea.model_validate(dict(__get_db().execute(
-        "SELECT * FROM Tea WHERE id == ?;", (id,)
-    ).fetchone()))
+    return Models.Tea.model_validate(__get_session().get(Tables.Tea, id))
 
 
 # --------------------------------------------------------------------------
@@ -77,39 +81,38 @@ def canonicalBenefit(name: str) -> str:
     return BENEFIT_ALIASES.get(name, name)
 
 def getProductByIdOrNone(id: int):
-    row = __get_db().execute("SELECT * FROM Tea WHERE id == ?;", (id,)).fetchone()
-    return Models.Tea.model_validate(dict(row)) if row else None
+    row = __get_session().get(Tables.Tea, id)
+    return Models.Tea.model_validate(row) if row else None
 
 def getAllProducts():
-    rows = __get_db().execute("SELECT * FROM Tea ORDER BY name;").fetchall()
-    return [Models.Tea.model_validate(dict(row)) for row in rows]
+    rows = __get_session().scalars(
+        select(Tables.Tea).order_by(Tables.Tea.name)
+    ).all()
+    return [Models.Tea.model_validate(row) for row in rows]
 
 def countProducts() -> int:
-    return __get_db().execute("SELECT COUNT(*) AS c FROM Tea;").fetchone()["c"]
+    return __get_session().scalar(select(func.count()).select_from(Tables.Tea))
 
 def countHerbs() -> int:
-    return __get_db().execute("SELECT COUNT(*) AS c FROM Herb;").fetchone()["c"]
+    return __get_session().scalar(select(func.count()).select_from(Tables.Herb))
 
 def getBenefitsByTea(tea_ids: list[int]) -> dict[int, list[str]]:
     """Canonical benefit names for each tea id, so cards can show their tags."""
     if not tea_ids:
         return {}
 
-    placeholders = ", ".join("?" for _ in tea_ids)
-    rows = __get_db().execute(
-        f"""SELECT tb.tea AS tea, b.benefit AS benefit
-            FROM Tea_benefit tb
-            JOIN Benefit b ON b.id = tb.benefit
-            WHERE tb.tea IN ({placeholders})
-            ORDER BY b.benefit;""",
-        tea_ids,
-    ).fetchall()
+    rows = __get_session().execute(
+        select(tea_benefit.c.tea, Tables.Benefit.benefit)
+        .join(Tables.Benefit, Tables.Benefit.id == tea_benefit.c.benefit)
+        .where(tea_benefit.c.tea.in_(tea_ids))
+        .order_by(Tables.Benefit.benefit)
+    ).all()
 
     grouped: dict[int, list[str]] = {tea_id: [] for tea_id in tea_ids}
-    for row in rows:
-        benefit = canonicalBenefit(row["benefit"])
-        if benefit not in grouped[row["tea"]]:
-            grouped[row["tea"]].append(benefit)
+    for tea_id, benefit in rows:
+        canonical = canonicalBenefit(benefit)
+        if canonical not in grouped[tea_id]:
+            grouped[tea_id].append(canonical)
     return grouped
 
 def getBenefitsForTea(tea_id: int) -> list[str]:
@@ -117,16 +120,15 @@ def getBenefitsForTea(tea_id: int) -> list[str]:
 
 def getAllBenefits() -> list[tuple[str, int]]:
     """Every benefit that is actually attached to a tea, with its tea count."""
-    rows = __get_db().execute(
-        """SELECT b.benefit AS benefit, tb.tea AS tea
-           FROM Tea_benefit tb
-           JOIN Benefit b ON b.id = tb.benefit;"""
-    ).fetchall()
+    rows = __get_session().execute(
+        select(Tables.Benefit.benefit, tea_benefit.c.tea)
+        .join(tea_benefit, tea_benefit.c.benefit == Tables.Benefit.id)
+    ).all()
 
     # Counted over canonical names, since two aliases may cover the same tea.
     counts: dict[str, set] = {}
-    for row in rows:
-        counts.setdefault(canonicalBenefit(row["benefit"]), set()).add(row["tea"])
+    for benefit, tea_id in rows:
+        counts.setdefault(canonicalBenefit(benefit), set()).add(tea_id)
 
     return sorted(
         ((name, len(teas)) for name, teas in counts.items()),
@@ -139,77 +141,72 @@ def __benefitIdsFor(names: list[str]) -> list[int]:
         return []
 
     wanted = {canonicalBenefit(name) for name in names}
-    rows = __get_db().execute("SELECT id, benefit FROM Benefit;").fetchall()
-    return [row["id"] for row in rows if canonicalBenefit(row["benefit"]) in wanted]
+    rows = __get_session().execute(
+        select(Tables.Benefit.id, Tables.Benefit.benefit)
+    ).all()
+    return [row_id for row_id, benefit in rows if canonicalBenefit(benefit) in wanted]
 
 def getCategories(limit: int = 8) -> list[Models.Category]:
     """The largest benefit groups, each illustrated by its most typical herb."""
+    session = __get_session()
     categories = []
+
     for name, count in getAllBenefits()[:limit]:
         benefit_ids = __benefitIdsFor([name])
-        placeholders = ", ".join("?" for _ in benefit_ids)
-        row = __get_db().execute(
-            f"""SELECT h.image_url AS image_url, COUNT(*) AS c
-                FROM Tea_benefit tb
-                JOIN Ingredients i ON i.tea = tb.tea
-                JOIN Herb h ON h.name = i.herb
-                WHERE tb.benefit IN ({placeholders})
-                GROUP BY h.id
-                ORDER BY c DESC, h.name
-                LIMIT 1;""",
-            benefit_ids,
-        ).fetchone()
+
+        image_url = session.scalar(
+            select(Tables.Herb.image_url)
+            .join(ingredients, ingredients.c.herb == Tables.Herb.name)
+            .join(tea_benefit, tea_benefit.c.tea == ingredients.c.tea)
+            .where(tea_benefit.c.benefit.in_(benefit_ids))
+            .group_by(Tables.Herb.id)
+            .order_by(func.count().desc(), Tables.Herb.name)
+            .limit(1)
+        )
 
         categories.append(Models.Category(
             name=name,
             slug=slugify(name),
             tea_count=count,
-            image_url=row["image_url"] if row else None,
+            image_url=image_url,
             blurb=CATEGORY_BLURBS.get(name),
         ))
     return categories
 
 def getIngredients(tea_id: int) -> list[Models.Herb]:
     """The herbs in a tea, each carrying the benefits shown in the hover card."""
-    rows = __get_db().execute(
-        """SELECT h.*
-           FROM Ingredients i
-           JOIN Herb h ON h.name = i.herb
-           WHERE i.tea = ?
-           ORDER BY i.id;""",
-        (tea_id,),
-    ).fetchall()
+    tea = __get_session().get(
+        Tables.Tea, tea_id,
+        options=[selectinload(Tables.Tea.herbs).selectinload(Tables.Herb.benefits)],
+    )
+    if tea is None:
+        return []
 
-    herbs = []
-    for row in rows:
-        benefits = __get_db().execute(
-            """SELECT b.benefit AS benefit
-               FROM Herb_benefit hb
-               JOIN Benefit b ON b.id = hb.benefit
-               WHERE hb.herb = ?
-               ORDER BY b.benefit;""",
-            (row["id"],),
-        ).fetchall()
-
-        herb = dict(row)
-        herb["benefits"] = sorted({canonicalBenefit(b["benefit"]) for b in benefits})
-        herbs.append(Models.Herb.model_validate(herb))
-    return herbs
+    return [
+        Models.Herb(
+            id=herb.id,
+            name=herb.name,
+            description=herb.description,
+            family_name=herb.family_name,
+            part_used=herb.part_used,
+            image_url=herb.image_url,
+            benefits=sorted({canonicalBenefit(b.benefit) for b in herb.benefits}),
+        )
+        for herb in tea.herbs
+    ]
 
 def getAllHerbNames() -> list[str]:
-    rows = __get_db().execute(
-        """SELECT DISTINCT h.name AS name
-           FROM Ingredients i
-           JOIN Herb h ON h.name = i.herb
-           ORDER BY h.name;"""
-    ).fetchall()
-    return [row["name"] for row in rows]
+    return list(__get_session().scalars(
+        select(Tables.Herb.name)
+        .where(Tables.Herb.name.in_(select(ingredients.c.herb)))
+        .order_by(Tables.Herb.name)
+    ).all())
 
 def getFaqs(tea_id: int) -> list[Models.Faq]:
-    rows = __get_db().execute(
-        "SELECT id, question, answer FROM Faq WHERE tea = ? ORDER BY id;", (tea_id,)
-    ).fetchall()
-    return [Models.Faq.model_validate(dict(row)) for row in rows]
+    rows = __get_session().scalars(
+        select(Tables.Faq).where(Tables.Faq.tea == tea_id).order_by(Tables.Faq.id)
+    ).all()
+    return [Models.Faq.model_validate(row) for row in rows]
 
 def searchProducts(
     query: str | None = None,
@@ -220,51 +217,46 @@ def searchProducts(
     semantic_ids: list[int] | None = None,
     sort: str = "relevance",
 ) -> list[Models.Tea]:
-    """Filtered catalogue search."""
-    clauses = []
-    params: list = []
+    """Filtered catalogue search.
+
+    Facets combine with AND; values inside one facet combine with OR. When a
+    text query is given, semantic_ids (from the FAISS name index) widen the
+    plain LIKE match so "sleepy" still finds Nighty Night.
+    """
+    statement = select(Tables.Tea)
 
     if query:
         like = f"%{query.strip()}%"
-        text_clause = "(t.name LIKE ? OR t.description LIKE ? OR t.benefit_headline LIKE ?)"
-        params += [like, like, like]
+        matches = [
+            Tables.Tea.name.like(like),
+            Tables.Tea.description.like(like),
+            Tables.Tea.benefit_headline.like(like),
+        ]
         if semantic_ids:
-            placeholders = ", ".join("?" for _ in semantic_ids)
-            text_clause = f"({text_clause} OR t.id IN ({placeholders}))"
-            params += semantic_ids
-        clauses.append(text_clause)
+            matches.append(Tables.Tea.id.in_(semantic_ids))
+        statement = statement.where(or_(*matches))
 
     if benefits:
         benefit_ids = __benefitIdsFor(benefits)
         if not benefit_ids:
             return []
-        placeholders = ", ".join("?" for _ in benefit_ids)
-        clauses.append(
-            f"t.id IN (SELECT tea FROM Tea_benefit WHERE benefit IN ({placeholders}))"
-        )
-        params += benefit_ids
+        statement = statement.where(Tables.Tea.id.in_(
+            select(tea_benefit.c.tea).where(tea_benefit.c.benefit.in_(benefit_ids))
+        ))
 
     if herbs:
-        placeholders = ", ".join("?" for _ in herbs)
-        clauses.append(
-            f"t.id IN (SELECT tea FROM Ingredients WHERE herb IN ({placeholders}))"
-        )
-        params += herbs
+        statement = statement.where(Tables.Tea.id.in_(
+            select(ingredients.c.tea).where(ingredients.c.herb.in_(herbs))
+        ))
 
     if is_tea is not None:
-        clauses.append("t.is_tea = ?")
-        params.append(1 if is_tea else 0)
+        statement = statement.where(Tables.Tea.is_tea == is_tea)
 
     if has_caffeine is not None:
-        clauses.append("t.has_caffeine = ?")
-        params.append(1 if has_caffeine else 0)
+        statement = statement.where(Tables.Tea.has_caffeine == has_caffeine)
 
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    rows = __get_db().execute(
-        f"SELECT t.* FROM Tea t {where} ORDER BY t.name;", params
-    ).fetchall()
-
-    teas = [Models.Tea.model_validate(dict(row)) for row in rows]
+    rows = __get_session().scalars(statement.order_by(Tables.Tea.name)).all()
+    teas = [Models.Tea.model_validate(row) for row in rows]
 
     if sort == "name":
         return teas
@@ -277,6 +269,6 @@ def searchProducts(
 
 @current_app.teardown_appcontext
 def close_connection(exception):
-    db = getattr(g, '_database', None)
-    if db is not None:
-        db.close()
+    session = getattr(g, '_session', None)
+    if session is not None:
+        session.close()

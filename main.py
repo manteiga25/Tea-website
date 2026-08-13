@@ -7,7 +7,8 @@ from model.embedderSearch import SearchEmbedder
 
 app = Flask(__name__)
 app.config["DATABASE_URL"] = "dataMining/tea.db"
-app.config["SECRET_KEY"] = uuid4().__str__()
+app.config["SECRET_KEY"] = str(uuid4())
+app.config["SESSION_PERMANENT"] = False
 
 with app.app_context():
     from database import Database
